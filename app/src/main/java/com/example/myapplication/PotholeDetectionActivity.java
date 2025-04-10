@@ -13,6 +13,7 @@ import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.location.Location;
+import android.media.session.MediaController;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
@@ -27,7 +28,11 @@ import android.widget.ImageView;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.widget.VideoView;
 
+
+import com.example.myapplication.databinding.ActivityPotholeDetectionBinding;
+import com.google.android.gms.common.util.IOUtils;
 import com.google.android.gms.location.FusedLocationProviderClient;
 import com.google.android.gms.location.LocationCallback;
 import com.google.android.gms.location.LocationRequest;
@@ -41,9 +46,11 @@ import com.google.android.gms.tasks.OnTokenCanceledListener;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 
 import okhttp3.Call;
 import okhttp3.Callback;
@@ -67,18 +74,23 @@ public class PotholeDetectionActivity extends AppCompatActivity {
 
     // Configure your API endpoint here
     private static final String API_URL = "https://livestock-seeking-visibility-teens.trycloudflare.com/predict  ";  // Use your actual IP or domain
+    private static final int REQUEST_VIDEO_CAPTURE = 103;
 
     private ImageView imagePreview;
     private TextView resultText;
     private TextView locationText;
     private Button captureButton;
+    private Button videoButton; //new
     private Button galleryButton;
     private Button detectButton;
+    private boolean isImage;
     private ProgressBar progressBar;
+    private ActivityPotholeDetectionBinding binding;
+    private Uri fileUri;
 
     private String currentPhotoPath;
     private Bitmap imageBitmap;
-    private OkHttpClient client;
+    private OkHttpClient client = new  OkHttpClient();
     private FusedLocationProviderClient fusedLocationClient;
     private double latitude = 0;
     private double longitude = 0;
@@ -88,21 +100,26 @@ public class PotholeDetectionActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_pothole_detection);
+        binding = ActivityPotholeDetectionBinding.inflate(getLayoutInflater());
+        setContentView(binding.getRoot());
 
         // Initialize views
-        imagePreview = findViewById(R.id.imagePreview);
+        ImageView previewImage = findViewById(R.id.previewImage);
+        VideoView previewVideo = findViewById(R.id.previewVideo);
+//        imagePreview = findViewById(R.id.imagePreview);
         resultText = findViewById(R.id.resultText);
         locationText = findViewById(R.id.locationText);
         captureButton = findViewById(R.id.captureButton);
         galleryButton = findViewById(R.id.galleryButton);
+        videoButton = findViewById(R.id.videoButton); //new
         detectButton = findViewById(R.id.detectButton);
         progressBar = findViewById(R.id.progressBar);
 
         // Initialize HTTP client
         client = new OkHttpClient.Builder()
-                .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .writeTimeout(30, TimeUnit.SECONDS)
                 .build();
 
         // Initialize location client
@@ -126,6 +143,26 @@ public class PotholeDetectionActivity extends AppCompatActivity {
             }
         });
 
+        videoButton.setOnClickListener(view -> {
+            boolean cameraPermissionGranted = checkCameraPermission();
+            boolean locationPermissionGranted = checkLocationPermission();
+
+            if (!cameraPermissionGranted && !locationPermissionGranted) {
+                requestCameraAndLocationPermissions();
+            } else if (!cameraPermissionGranted) {
+                requestCameraPermission();
+            } else if (!locationPermissionGranted) {
+                requestLocationPermissions();
+            } else {
+                // Both permissions granted
+                getCurrentLocation();
+                dispatchTakeVideoIntent();
+
+//                // Start the video activity once permissions are granted
+//                Intent intent = new Intent(MainActivity.this, VideoActivity.class);
+//                startActivity(intent);
+            }
+        });
 
         galleryButton.setOnClickListener(v -> {
             if (checkStoragePermission()) {
@@ -138,13 +175,49 @@ public class PotholeDetectionActivity extends AppCompatActivity {
             }
         });
 
-        detectButton.setOnClickListener(v -> {
-            if (imageBitmap != null) {
-                detectPothole(imageBitmap);
+        binding.detectButton.setOnClickListener(v -> {
+            if (fileUri != null) {
+                if (isImage) {
+                    // Handle image detection
+                    try {
+                        Bitmap imageBitmap = binding.previewImage.getDrawingCache();
+                        if (imageBitmap != null) {
+                            detectPothole(imageBitmap);
+                        } else {
+                            Toast.makeText(this, "Please select or capture an image", Toast.LENGTH_SHORT).show();
+                        }
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error getting image from ImageView", e);
+                        Toast.makeText(this, "Error processing image", Toast.LENGTH_SHORT).show();
+                    }
+                } else {
+                    // Handle video detection
+                    try {
+                        String encodedVideo = encodeVideoToBase64(fileUri);
+                        if (encodedVideo != null) {
+                            detectPothole(encodedVideo);
+                        } else {
+                            Toast.makeText(this, "Error encoding video", Toast.LENGTH_SHORT).show();
+                        }
+                    } catch (IOException e) {
+                        Log.e(TAG, "Error processing video", e);
+                        Toast.makeText(this, "Error processing video: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                    }
+                }
             } else {
-                Toast.makeText(this, "Please select an image first", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Please capture or select media first", Toast.LENGTH_SHORT).show();
             }
         });
+    }
+    private String encodeVideoToBase64(Uri videoUri) throws IOException {
+        try (InputStream inputStream = getContentResolver().openInputStream(videoUri)) {
+            if (inputStream != null) {
+                byte[] bytes = IOUtils.toByteArray(inputStream); // Requires Apache Commons IO
+                return Base64.encodeToString(bytes, Base64.DEFAULT);
+            } else {
+                return null;
+            }
+        }
     }
     private void requestCameraPermission() {
         ActivityCompat.requestPermissions(this,
@@ -346,6 +419,18 @@ public class PotholeDetectionActivity extends AppCompatActivity {
         }
     }
 
+    private void dispatchTakeVideoIntent() {
+        Intent takeVideoIntent = new Intent(MediaStore.ACTION_VIDEO_CAPTURE);
+
+        // Ensure there's a camera activity to handle the intent
+        if (takeVideoIntent.resolveActivity(getPackageManager()) != null) {
+            // Start the video capture intent
+            startActivityForResult(takeVideoIntent, REQUEST_VIDEO_CAPTURE);
+        } else {
+            Toast.makeText(this, "No camera app available", Toast.LENGTH_SHORT).show();
+        }
+    }
+
     private File createImageFile() throws IOException {
         // Create an image file name
         String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
@@ -367,35 +452,77 @@ public class PotholeDetectionActivity extends AppCompatActivity {
         startActivityForResult(intent, REQUEST_GALLERY_IMAGE);
     }
 
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
+@Override
+protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+    super.onActivityResult(requestCode, resultCode, data);
 
-        if (resultCode == RESULT_OK) {
-            if (requestCode == REQUEST_IMAGE_CAPTURE) {
-                // Load the taken photo
-                try {
-                    File file = new File(currentPhotoPath);
-                    imageBitmap = BitmapFactory.decodeFile(file.getAbsolutePath());
-                    imagePreview.setImageBitmap(imageBitmap);
-                    resultText.setText("Image captured. Press Detect to analyze.");
-                } catch (Exception e) {
-                    Log.e(TAG, "Error loading captured image", e);
-                    Toast.makeText(this, "Error loading captured image", Toast.LENGTH_SHORT).show();
-                }
-            } else if (requestCode == REQUEST_GALLERY_IMAGE && data != null) {
-                // Load the selected gallery image
-                try {
-                    Uri selectedImage = data.getData();
-                    imageBitmap = MediaStore.Images.Media.getBitmap(getContentResolver(), selectedImage);
-                    imagePreview.setImageBitmap(imageBitmap);
-                    resultText.setText("Image selected. Press Detect to analyze.");
-                } catch (IOException e) {
-                    Log.e(TAG, "Error loading gallery image", e);
-                    Toast.makeText(this, "Error loading gallery image", Toast.LENGTH_SHORT).show();
-                }
+    if (requestCode == REQUEST_IMAGE_CAPTURE && resultCode == RESULT_OK) {
+        Uri photoUri = Uri.fromFile(new File(currentPhotoPath));
+        showPreview(photoUri, true);
+    } else if (requestCode == REQUEST_GALLERY_IMAGE && resultCode == RESULT_OK) { // Complete the condition
+        if (data != null && data.getData() != null) {
+            Uri selectedImageUri = data.getData();
+            showPreview(selectedImageUri, true);
+        } else {
+            Toast.makeText(this, "Failed to select image from gallery", Toast.LENGTH_SHORT).show();
+            Log.e(TAG, "Gallery intent returned null data or URI");
+        }
+    }
+}
+
+    private void showPreview(Uri fileUri, boolean isImage) {
+        Log.d(TAG, "showPreview called: fileUri = " + fileUri + ", isImage = " + isImage);
+
+        if (fileUri == null) {
+            Log.e(TAG, "File URI is null");
+            Toast.makeText(this, "Error: File not found", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (isImage) {
+            Log.d(TAG, "Displaying image");
+            binding.previewImage.setVisibility(View.VISIBLE);
+            binding.previewVideo.setVisibility(View.GONE);
+
+            try {
+                binding.previewImage.setImageURI(fileUri);
+                Log.d(TAG, "Image displayed successfully");
+            } catch (Exception e) {
+                Log.e(TAG, "Error displaying image", e);
+                Toast.makeText(this, "Error displaying image", Toast.LENGTH_SHORT).show();
+            }
+        } else {
+            Log.d(TAG, "Displaying video");
+            binding.previewImage.setVisibility(View.GONE);
+            binding.previewVideo.setVisibility(View.VISIBLE);
+
+            try {
+                Log.d(TAG, "Setting video URI: " + fileUri);
+                binding.previewVideo.setVideoURI(fileUri);
+                android.widget.MediaController mediaController = new android.widget.MediaController(this);
+                binding.previewVideo.setMediaController(mediaController);
+                mediaController.setAnchorView(binding.previewVideo);
+                binding.previewVideo.requestFocus();
+
+                binding.previewVideo.setOnPreparedListener(mp -> {
+                    Log.d(TAG, "Video prepared, starting playback");
+                    binding.previewVideo.start();
+                });
+
+                binding.previewVideo.setOnErrorListener((mp, what, extra) -> {
+                    Log.e(TAG, "Error displaying video: what=" + what + ", extra=" + extra);
+                    Toast.makeText(this, "Error playing video", Toast.LENGTH_SHORT).show();
+                    return true;
+                });
+            } catch (Exception e) {
+                Log.e(TAG, "Error setting video URI", e);
+                Toast.makeText(this, "Error setting up video", Toast.LENGTH_SHORT).show();
             }
         }
+    }
+
+    private void detectPothole(String encodedMedia) {
+        sendMediaToServer(encodedMedia, "video");
     }
 
     private void detectPothole(Bitmap bitmap) {
@@ -478,6 +605,94 @@ public class PotholeDetectionActivity extends AppCompatActivity {
                         progressBar.setVisibility(View.INVISIBLE);
                         resultText.setText("Error: HTTP " + response.code());
                     });
+                }
+            }
+        });
+    }
+    private void sendMediaToServer(Object media, String mediaType) {
+        // Show progress
+        binding.progressBar.setVisibility(View.VISIBLE);
+        binding.resultText.setText("Analyzing " + mediaType + "...");
+
+        String encodedMedia;
+        if (mediaType.equals("image") && media instanceof Bitmap) {
+            // Convert bitmap to base64 string
+            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+            ((Bitmap) media).compress(Bitmap.CompressFormat.JPEG, 100, byteArrayOutputStream);
+            byte[] byteArray = byteArrayOutputStream.toByteArray();
+            encodedMedia = Base64.encodeToString(byteArray, Base64.DEFAULT);
+        } else if (mediaType.equals("video") && media instanceof String) {
+            encodedMedia = (String) media;
+        } else {
+            Log.e(TAG, "Invalid media type or data");
+            runOnUiThread(() -> {
+                binding.progressBar.setVisibility(View.INVISIBLE);
+                binding.resultText.setText("Error: Invalid media");
+            });
+            return;
+        }
+
+        // Create request body
+        RequestBody requestBody = new MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart(mediaType, encodedMedia)  // Use "image" or "video" as the key
+                .build();
+
+        // Create request
+        Request request = new Request.Builder()
+                .url(API_URL)
+                .post(requestBody)
+                .build();
+
+        // Execute request asynchronously
+        client.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(@NonNull Call call, @NonNull IOException e) {
+                Log.e(TAG, "API request failed", e);
+                runOnUiThread(() -> {
+                    binding.progressBar.setVisibility(View.INVISIBLE);
+                    binding.resultText.setText("Error: " + e.getMessage());
+                });
+            }
+
+            @Override
+            public void onResponse(@NonNull Call call, @NonNull Response response) throws IOException {
+                final String responseBody = response.body().string(); // Capture the response body
+                runOnUiThread(() -> binding.progressBar.setVisibility(View.INVISIBLE)); // Ensure progress bar is hidden
+
+                if (response.isSuccessful()) {
+                    try {
+                        JSONObject jsonObject = new JSONObject(responseBody);
+                        Log.d(TAG, "Received detection response: " + jsonObject.toString());
+
+                        // Adapt response parsing based on your server's output
+                        // The following is a placeholder example:
+
+                        boolean potholeDetected = jsonObject.optBoolean("pothole_detected", false); // Default to false if not present
+                        double confidence = jsonObject.optDouble("confidence", 0.0); // Default to 0.0 if not present
+                        String additionalInfo = jsonObject.optString("additional_info", ""); // Optional additional info
+
+                        String resultString;
+                        if (potholeDetected) {
+                            resultString = String.format(Locale.getDefault(),
+                                    "Result: Pothole Detected!\nConfidence: %.2f%%\n%s", confidence, additionalInfo);
+                        } else {
+                            resultString = "Result: No Potholes Detected";
+                        }
+
+                        runOnUiThread(() -> binding.resultText.setText(resultString));
+
+                        // Handle location if available (similar to image detection)
+                        if (hasLocation && potholeDetected) {
+                            Log.i(TAG, "Potential pothole detected at: " + latitude + ", " + longitude + " (from " + mediaType + ")");
+                        }
+                    } catch (JSONException e) {
+                        Log.e(TAG, "Error parsing JSON response: " + responseBody, e); // Include body in error message
+                        runOnUiThread(() -> binding.resultText.setText("Error parsing response: " + e.getMessage())); // Show specific error
+                    }
+                } else {
+                    Log.e(TAG, "API request unsuccessful: HTTP " + response.code() + ", Body: " + responseBody); // Log code and body
+                    runOnUiThread(() -> binding.resultText.setText("Error: HTTP " + response.code()));
                 }
             }
         });
